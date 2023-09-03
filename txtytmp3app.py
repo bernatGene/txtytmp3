@@ -24,7 +24,7 @@ from textual.widgets import (
 from textual.widget import Widget
 
 
-class Donwload(Button):
+class Download(Button):
     stream: Stream = None
     location: Path | None = None
 
@@ -33,9 +33,6 @@ class Donwload(Button):
             self.remaining = remaining
             super().__init__()
 
-    async def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        self.log("Capture change", event)
-
     def logged_on_progress(self, default_on_progress, chunk, handler, remaining):
         self.log("On Progress", remaining)
         self.post_message(self.DownloadProgress(remaining))
@@ -43,7 +40,6 @@ class Donwload(Button):
 
     @work(exclusive=True, thread=True)
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Event handler called when a button is pressed."""
         if self.stream is not None:
             default_on_progress = self.stream.on_progress
             self.stream.on_progress = partial(
@@ -75,7 +71,7 @@ class FilteredDirectoryTree(DirectoryTree):
         ]
 
 
-class DonwloadLocation(Widget):
+class DownloadLocation(Widget):
     def __init__(
         self,
         *children: Widget,
@@ -86,9 +82,9 @@ class DonwloadLocation(Widget):
         disabled: bool = False,
     ) -> None:
         if default_loc is not None:
-            self.default_loc = default_loc
+            self.default_loc = Path(default_loc)
         else:
-            self.default_loc = Path.home().as_posix()
+            self.default_loc = Path.home()
         self.selected_path = self.default_loc
         super().__init__(
             *children, name=name, id=id, classes=classes, disabled=disabled
@@ -104,7 +100,7 @@ class DonwloadLocation(Widget):
             yield Markdown("## Download location")
             yield Static(f"Current Location: {self.default_loc}", id="locationbanner")
             yield Horizontal(
-                Static("on:      ", classes="label", id="s_exp_hide"),
+                Static("Hide tree: ", classes="label", id="s_exp_hide"),
                 Switch(value=True),
                 Button(label="Set as default", id="defaultloc"),
                 classes="container",
@@ -112,38 +108,32 @@ class DonwloadLocation(Widget):
             yield FilteredDirectoryTree(Path.home(), id="dirtree")
 
     @work(exclusive=True, thread=True)
-    def write_default_loc(self, new_path: Path):
+    @on(Button.Pressed)
+    def write_default_loc(self, event: Button.Pressed):
         cfg_path = Path(".cfg.yaml")
         cfgs = {}
         if cfg_path.is_file():
             cfgs = yaml.safe_load(cfg_path.read_text())
-        cfgs["download_loc"] = new_path.as_posix()
+        cfgs["download_loc"] = self.selected_path.as_posix()
         cfg_path.write_text(yaml.safe_dump(cfgs))
 
-    @on(Button.Pressed)
-    def set_default_loc(self, event: Button.Pressed):
-        self.write_default_loc(self.selected_path)
-
     @on(Switch.Changed)
-    def toggle_exp_hide(self, event: Switch.Changed):
+    async def toggle_exp_hide(self, event: Switch.Changed):
         show = event.value
         if show:
-            self.query_one("#s_exp_hide", Static).update("Hide: ")
+            self.query_one("#s_exp_hide", Static).update("Hide tree: ")
             self.query_one("#dirtree", FilteredDirectoryTree).visible = True
         else:
             self.query_one("#s_exp_hide", Static).update("Explore: ")
             self.query_one("#dirtree", FilteredDirectoryTree).visible = False
 
-    @on(SelectedPath)
-    def change_download_location(self, event: SelectedPath):
-        self.selected_path = event.selected_path
-        self.query_one("#locationbanner", Static).update(
-            f"Current Location: {event.selected_path}"
-        )
-
     @on(DirectoryTree.NodeHighlighted)
-    def changed_root(self, event: DirectoryTree.NodeHighlighted):
-        self.post_message(self.SelectedPath(event.node.data.path))
+    async def changed_location(self, event: DirectoryTree.NodeHighlighted):
+        self.selected_path = event.node.data.path
+        self.query_one("#locationbanner", Static).update(
+            f"Current Location: {self.selected_path}"
+        )
+        self.post_message(self.SelectedPath(self.selected_path))
 
 
 class YT2MP3(App):
@@ -169,25 +159,23 @@ class YT2MP3(App):
             with Vertical(id="results-container"):
                 yield Markdown(id="results")
                 yield StreamSelect(id="tracks", options=[])
-                yield Donwload(id="download", label="Download")
+                yield Download(id="download", label="Download")
                 yield ProgressBar(id="dprog", show_eta=False)
-            yield DonwloadLocation(id="path", default_loc=self.cfgs["download_loc"])
+            yield DownloadLocation(id="path", default_loc=self.cfgs["download_loc"])
 
     def on_mount(self) -> None:
         """Called when app starts."""
-        # Give the input focus, so we can start typing straight away
         self.query_one("#tracks", StreamSelect).display = False
         self.query_one("#dprog", ProgressBar).display = False
-        # self.query_one("#dirtree", DirectoryTree).display = False
         self.query_one("#url", Input).focus()
+        self.change_download_location(DownloadLocation.SelectedPath(self.cfgs["download_loc"]))
 
-    async def on_input_changed(self, message: Input.Changed) -> None:
-        """A coroutine to handle a text changed message."""
+    @on(Input.Changed)
+    async def url_changed(self, message: Input.Changed) -> None:
         self.query_one("#results", Markdown).update("Searching...")
         if message.value:
             self.find_video(message.value)
         else:
-            # Clear the results
             self.query_one("#results", Markdown).update("")
 
     @on(Switch.Changed)
@@ -195,9 +183,9 @@ class YT2MP3(App):
         if not event.value:
             self.query_one("#results", Markdown).focus()
 
-    @on(DonwloadLocation.SelectedPath)
-    def change_download_location(self, event: DonwloadLocation.SelectedPath):
-        self.query_one("#download", Donwload).location = event.selected_path
+    @on(DownloadLocation.SelectedPath)
+    def change_download_location(self, event: DownloadLocation.SelectedPath):
+        self.query_one("#download", Download).location = event.selected_path
 
     @on(StreamSelect.Selected)
     def selected_stream(self, event: StreamSelect.Selected) -> None:
@@ -208,10 +196,9 @@ class YT2MP3(App):
         self.query_one("#dprog", ProgressBar).total = event.stream.filesize
         self.query_one("#dprog", ProgressBar).progress = 0
 
-    @on(Donwload.DownloadProgress)
-    def download_progress(self, event: Donwload.DownloadProgress) -> None:
+    @on(Download.DownloadProgress)
+    def download_progress(self, event: Download.DownloadProgress) -> None:
         dprog = self.query_one("#dprog", ProgressBar)
-        # dprog.update(dprog.total,  dprog.total - event.remaining)
         advance = (dprog.total - event.remaining) - dprog.progress
         dprog.advance(advance)
         self.log(
@@ -222,7 +209,6 @@ class YT2MP3(App):
             dprog.percentage,
             advance,
         )
-        # self.query_one("#results", Markdown).update(str(event.remaining))
 
     @work(exclusive=True, thread=True)
     async def find_video(self, url: str) -> None:
